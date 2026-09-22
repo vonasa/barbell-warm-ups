@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Barbell Warm-ups</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <h1>Barbell Warm-ups</h1>
+
+    <form id="form" autocomplete="off">
+      <fieldset class="lifts">
+        <legend>Lift</legend>
+        <label><input type="radio" name="lift" value="squat" checked><span>Squat</span></label>
+        <label><input type="radio" name="lift" value="press"><span>Press</span></label>
+        <label><input type="radio" name="lift" value="deadlift"><span>Deadlift</span></label>
+      </fieldset>
+
+      <label class="weight">
+        <span>Work weight (kg)</span>
+        <input id="weight" name="weight" type="text" inputmode="decimal" placeholder="e.g. 100">
+      </label>
+    </form>
+
+    <p id="note" class="note" aria-live="polite"></p>
+
+    <table id="table" hidden>
+      <thead>
+        <tr><th>Total (kg)</th><th>Per side (kg)</th><th>Reps</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
