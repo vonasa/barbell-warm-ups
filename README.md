@@ -1,16 +1,32 @@
 # Barbell Warm-ups
 
-A one-page calculator for barbell warm-up sets (squat, press, deadlift). Enter the work weight in kg to get a table of warm-up sets: total weight, weight per side, and reps.
+A one-page calculator for barbell warm-up sets (squat, press, deadlift). Enter the work weight in kg to get a table of warm-up sets: total weight, weight per side with the plates that make it, and reps.
+
+## Plates
+
+Every weight comes from the plates you own, declared in `PLATES` at the top of `app.js`:
+
+| Plate | Count |
+| --- | --- |
+| 25 kg | 2 |
+| 20 kg | 2 |
+| 10 kg | 4 |
+| 5 kg | 4 |
+| 2.5 kg | 4 |
+| 1.25 kg | 4 |
+| 0.5 kg | 2 |
+
+Only matched pairs count, so an odd plate is ignored. On the 20 kg bar this inventory makes 134 different totals — a 2.5 kg grid with a 1 kg offset from the 0.5 pair (20, 21, 22.5, 23.5, 25, 26, …) — up to **186 kg**, which is 83 kg per side.
 
 ## How the warm-ups are built
 
-- Every weight is a multiple of 2.5 kg (the smallest plate is 1.25 kg). The bar is 20 kg.
+- Every weight is rounded **up** to the nearest total the plates can build. A work weight above 186 kg is capped at 186 kg with a note.
 - The empty bar comes first: 2 × 5.
-- The last warm-up is a single about 7.5% below the work weight, rounded to the nearest 2.5 kg and never above 95% of it.
-- Earlier sets are planned backwards from the last warm-up in equal jumps of about 17.5% of the work weight.
+- The last warm-up is a single about 7.5% below the work weight and never above 95% of it.
+- Earlier sets are planned backwards from the last warm-up in equal jumps of about 17.5% of the work weight, each rounded up onto a loadable weight.
 - The first weighted set is × 5, the next is × 3 (plus one more triple when there are enough sets), and the rest are singles.
 
-Per-lift settings live in `LIFTS` at the top of `app.js`.
+Plates live in `PLATES` and per-lift settings in `LIFTS`, both at the top of `app.js`.
 
 ## Deployment
 

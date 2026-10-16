@@ -1,8 +1,16 @@
 'use strict';
 
-// All weights are in kg. The smallest plate is 1.25 kg, so every total is a multiple of 2.5 kg.
-const INCREMENT = 2.5;
-const EPS = 1e-9;
+// Plates owned, per size, in kg. Only matched pairs are usable, so an odd plate is ignored.
+// This inventory is what every weight below gets rounded onto.
+const PLATES = [
+  { kg: 25, count: 2 },
+  { kg: 20, count: 2 },
+  { kg: 10, count: 4 },
+  { kg: 5, count: 4 },
+  { kg: 2.5, count: 4 },
+  { kg: 1.25, count: 4 },
+  { kg: 0.5, count: 2 },
+];
 
 // Per-lift settings. All lifts share the same values for now; change them here to vary a lift.
 const BASE = {
@@ -23,11 +31,81 @@ const LIFTS = {
   deadlift: { ...BASE, label: 'Deadlift' },
 };
 
-// Conversions between kg and whole 2.5 kg units, tolerant of floating-point noise.
-const ceilUnits = (kg) => Math.ceil(kg / INCREMENT - EPS);
-const floorUnits = (kg) => Math.floor(kg / INCREMENT + EPS);
-const nearestUnits = (kg) => Math.round(kg / INCREMENT);
-const toKg = (units) => units * INCREMENT;
+// Weights are compared as whole hundredths of a kg, so nothing depends on float equality.
+const H = (kg) => Math.round(kg * 100);
+const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
+
+// Every total the plates can build on the given bar, ascending, each with the plates for one side:
+// { h, total, perSide, plates: [{ kg, n }] }. The plates are listed heaviest first.
+function buildLoadable(bar, plates) {
+  const sizes = plates
+    .map((p) => ({ kg: p.kg, h: H(p.kg), pairs: Math.floor(p.count / 2) }))
+    .filter((p) => p.pairs > 0 && p.h > 0)
+    .sort((a, b) => b.h - a.h);
+
+  // One side's load (in hundredths) -> how many of each size make it, parallel to `sizes`.
+  const used = (counts) => counts.reduce((a, b) => a + b, 0);
+  let combos = new Map([[0, []]]);
+  for (const size of sizes) {
+    const next = new Map();
+    for (const [load, counts] of combos) {
+      for (let n = 0; n <= size.pairs; n++) {
+        const candidate = [...counts, n];
+        const prev = next.get(load + n * size.h);
+        // Several combinations can reach the same weight; keep the one using the fewest plates.
+        if (!prev || used(candidate) < used(prev)) next.set(load + n * size.h, candidate);
+      }
+    }
+    combos = next;
+  }
+
+  return [...combos]
+    .sort((a, b) => a[0] - b[0])
+    .map(([load, counts]) => ({
+      h: H(bar) + 2 * load,
+      total: (H(bar) + 2 * load) / 100,
+      perSide: load / 100,
+      plates: counts.map((n, i) => ({ kg: sizes[i].kg, n })).filter((p) => p.n > 0),
+    }));
+}
+
+const loadableCache = new Map();
+function loadableFor(bar) {
+  if (!loadableCache.has(bar)) loadableCache.set(bar, buildLoadable(bar, PLATES));
+  return loadableCache.get(bar);
+}
+
+// Smallest index at or above kg; the heaviest index when kg is above everything loadable.
+function ceilIndex(table, kg) {
+  const h = H(kg);
+  let lo = 0;
+  let hi = table.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (table[mid].h >= h) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
+// Largest index at or below kg; index 0 when kg is below the bar.
+function floorIndex(table, kg) {
+  const h = H(kg);
+  let lo = 0;
+  let hi = table.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (table[mid].h <= h) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+function nearestIndex(table, kg) {
+  const i = ceilIndex(table, kg);
+  if (i === 0) return 0;
+  return table[i].h - H(kg) <= H(kg) - table[i - 1].h ? i : i - 1;
+}
 
 function repsFor(index, count, cfg) {
   if (index === count - 1) return 1; // the last warm-up is always a single
@@ -37,42 +115,55 @@ function repsFor(index, count, cfg) {
   return 1;
 }
 
-// Returns { work, rounded, sets: [{ total, perSide, reps, kind }] } or null for invalid input.
+// Returns { work, rounded, capped, maxTotal, sets: [{ total, perSide, plates, reps, kind }] },
+// or null for invalid input. Every weight is one the plates can actually build.
 function computeWarmups(liftKey, target) {
   const cfg = LIFTS[liftKey];
   if (!cfg || !Number.isFinite(target) || target < cfg.bar) return null;
 
-  const workU = ceilUnits(target);
-  const work = toKg(workU);
-  const startU = ceilUnits(cfg.startWeight);
-  const set = (total, reps, kind) => ({ total, perSide: (total - cfg.bar) / 2, reps, kind });
+  const table = loadableFor(cfg.bar);
+  const maxTotal = table[table.length - 1].total;
+  const capped = H(target) > H(maxTotal);
+  const workIdx = capped ? table.length - 1 : ceilIndex(table, target);
+  const startIdx = Math.min(ceilIndex(table, cfg.startWeight), workIdx);
+  const work = table[workIdx].total;
+
+  const set = (entry, reps, kind) => ({
+    total: entry.total, perSide: entry.perSide, plates: entry.plates, reps, kind,
+  });
 
   const sets = [];
-  for (let i = 0; i < cfg.startSets; i++) sets.push(set(toKg(startU), cfg.startReps, 'start'));
+  for (let i = 0; i < cfg.startSets; i++) sets.push(set(table[startIdx], cfg.startReps, 'start'));
 
-  if (workU > startU + 1) {
-    let lastU = Math.min(nearestUnits(work * cfg.lastPct), floorUnits(work * cfg.lastMaxPct));
-    lastU = Math.min(Math.max(lastU, startU + 1), workU - 1);
+  if (workIdx > startIdx + 1) {
+    const lastIdx = clamp(
+      Math.min(nearestIndex(table, work * cfg.lastPct), floorIndex(table, work * cfg.lastMaxPct)),
+      startIdx + 1,
+      workIdx - 1,
+    );
 
-    const distance = lastU - startU;
-    const jumps = Math.min(Math.max(Math.round(distance / (work * cfg.jumpPct / INCREMENT)), 1), distance);
-    const step = Math.max(1, Math.round(distance / jumps));
+    const distance = table[lastIdx].total - table[startIdx].total;
+    const jumps = clamp(Math.round(distance / (work * cfg.jumpPct)), 1, lastIdx - startIdx);
+    const step = distance / jumps;
 
-    const weighted = [];
+    // Plan backwards from the last warm-up, rounding each weight up onto a loadable one. Two
+    // targets can round onto the same weight, so collect indices in a set.
+    const weighted = new Set();
     for (let i = 0; i < jumps; i++) {
-      const u = lastU - i * step;
-      if (u > startU) weighted.unshift(u);
+      const idx = ceilIndex(table, table[lastIdx].total - i * step);
+      if (idx > startIdx && idx <= lastIdx) weighted.add(idx);
     }
 
-    weighted.forEach((u, i) => sets.push(set(toKg(u), repsFor(i, weighted.length, cfg), 'warmup')));
+    const ordered = [...weighted].sort((a, b) => a - b);
+    ordered.forEach((idx, i) => sets.push(set(table[idx], repsFor(i, ordered.length, cfg), 'warmup')));
   }
 
-  sets.push(set(work, null, 'work'));
-  return { work, rounded: work !== target, sets };
+  sets.push(set(table[workIdx], null, 'work'));
+  return { work, rounded: H(work) !== H(target), capped, maxTotal, sets };
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { LIFTS, computeWarmups };
+  module.exports = { PLATES, LIFTS, computeWarmups, loadableFor };
 }
 
 // ---- UI ----
@@ -87,6 +178,7 @@ if (typeof document !== 'undefined') {
   const fmt = (kg) => String(Math.round(kg * 100) / 100);
   const selectedLift = () => form.elements.lift.value;
   const parseWeight = (s) => (s.trim() === '' ? NaN : Number(s.trim().replace(',', '.')));
+  const platesText = (plates) => plates.flatMap((p) => Array(p.n).fill(fmt(p.kg))).join(' + ');
 
   function load() {
     try {
@@ -100,6 +192,20 @@ if (typeof document !== 'undefined') {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ lift, weight }));
     } catch (e) { /* storage unavailable */ }
+  }
+
+  function sideCell(s) {
+    const td = document.createElement('td');
+    td.append(document.createTextNode(fmt(s.perSide)));
+    // A lone plate already reads as the per-side weight, so listing it again adds nothing.
+    const redundant = s.plates.length === 1 && s.plates[0].n === 1;
+    if (s.plates.length && !redundant) {
+      const span = document.createElement('span');
+      span.className = 'plates';
+      span.textContent = platesText(s.plates);
+      td.append(span);
+    }
+    return td;
   }
 
   function render() {
@@ -118,17 +224,24 @@ if (typeof document !== 'undefined') {
 
     save(lift, weight);
     table.hidden = false;
-    note.textContent = result.rounded ? `Work weight rounded up to ${fmt(result.work)} kg (loadable with 1.25 kg plates).` : '';
+    if (result.capped) {
+      note.textContent = `Your plates max out at ${fmt(result.maxTotal)} kg — using that as the work weight.`;
+    } else if (result.rounded) {
+      note.textContent = `Work weight rounded up to ${fmt(result.work)} kg (the nearest weight your plates can make).`;
+    } else {
+      note.textContent = '';
+    }
 
     for (const s of result.sets) {
       const tr = document.createElement('tr');
       tr.className = s.kind;
-      const cells = [fmt(s.total), fmt(s.perSide), s.kind === 'work' ? 'Work' : `× ${s.reps}`];
-      for (const text of cells) {
-        const td = document.createElement('td');
-        td.textContent = text;
-        tr.append(td);
-      }
+
+      const total = document.createElement('td');
+      total.textContent = fmt(s.total);
+      const reps = document.createElement('td');
+      reps.textContent = s.kind === 'work' ? 'Work' : `× ${s.reps}`;
+
+      tr.append(total, sideCell(s), reps);
       tbody.append(tr);
     }
   }

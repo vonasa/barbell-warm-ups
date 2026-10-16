@@ -143,6 +143,8 @@ th {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.03em;
+  /* Keep headings on one line; a long plate list wraps instead. */
+  white-space: nowrap;
 }
 
 td { font-size: 1.15rem; }
@@ -153,4 +155,12 @@ tr.work td {
   background: var(--work-bg);
   font-weight: 700;
   border-bottom: none;
+}
+
+.plates {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 400;
+  color: var(--muted);
+  margin-top: 2px;
 }
