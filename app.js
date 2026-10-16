@@ -18,6 +18,7 @@ const BASE = {
   startWeight: 20,       // weight of the first (unweighted) sets
   startSets: 2,          // number of sets at startWeight
   startReps: 5,          // reps per set at startWeight
+  minWarmup: 0,          // calculated warm-ups at or below this weight are dropped
   lastPct: 0.925,        // aim for the last warm-up single ~7.5% below the work weight...
   lastMaxPct: 0.95,      // ...but never above 95% of it
   jumpPct: 0.175,        // aim for jumps of ~17.5% of the work weight
@@ -28,7 +29,18 @@ const BASE = {
 const LIFTS = {
   squat: { ...BASE, label: 'Squat' },
   press: { ...BASE, label: 'Press' },
-  deadlift: { ...BASE, label: 'Deadlift' },
+  // Deadlifts come third in the session, so they need less warm-up, and they are never pulled
+  // with an empty bar: one set of 5 at 40 kg, then the calculated weights above 44 kg at 3 and
+  // 2 reps, then singles as usual.
+  deadlift: {
+    ...BASE,
+    label: 'Deadlift',
+    startWeight: 40,
+    startSets: 1,
+    minWarmup: 44,
+    repPattern: [3, 2],
+    optionalReps: [],
+  },
 };
 
 // Weights are compared as whole hundredths of a kg, so nothing depends on float equality.
@@ -125,6 +137,8 @@ function computeWarmups(liftKey, target) {
   const maxTotal = table[table.length - 1].total;
   const capped = H(target) > H(maxTotal);
   const workIdx = capped ? table.length - 1 : ceilIndex(table, target);
+  // Jumps are always spaced from the bar, even for a lift whose first sets start above it.
+  const barIdx = Math.min(ceilIndex(table, cfg.bar), workIdx);
   const startIdx = Math.min(ceilIndex(table, cfg.startWeight), workIdx);
   const work = table[workIdx].total;
 
@@ -135,23 +149,24 @@ function computeWarmups(liftKey, target) {
   const sets = [];
   for (let i = 0; i < cfg.startSets; i++) sets.push(set(table[startIdx], cfg.startReps, 'start'));
 
-  if (workIdx > startIdx + 1) {
+  if (workIdx > barIdx + 1) {
     const lastIdx = clamp(
       Math.min(nearestIndex(table, work * cfg.lastPct), floorIndex(table, work * cfg.lastMaxPct)),
-      startIdx + 1,
+      barIdx + 1,
       workIdx - 1,
     );
 
-    const distance = table[lastIdx].total - table[startIdx].total;
-    const jumps = clamp(Math.round(distance / (work * cfg.jumpPct)), 1, lastIdx - startIdx);
+    const distance = table[lastIdx].total - table[barIdx].total;
+    const jumps = clamp(Math.round(distance / (work * cfg.jumpPct)), 1, lastIdx - barIdx);
     const step = distance / jumps;
 
     // Plan backwards from the last warm-up, rounding each weight up onto a loadable one. Two
-    // targets can round onto the same weight, so collect indices in a set.
+    // targets can round onto the same weight, so collect indices in a set. Anything at or below
+    // minWarmup is dropped — it sits too close to the first sets to be worth loading.
     const weighted = new Set();
     for (let i = 0; i < jumps; i++) {
       const idx = ceilIndex(table, table[lastIdx].total - i * step);
-      if (idx > startIdx && idx <= lastIdx) weighted.add(idx);
+      if (idx > barIdx && idx <= lastIdx && table[idx].h > H(cfg.minWarmup)) weighted.add(idx);
     }
 
     const ordered = [...weighted].sort((a, b) => a - b);

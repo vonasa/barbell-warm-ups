@@ -21,10 +21,12 @@ Only matched pairs count, so an odd plate is ignored. On the 20 kg bar this inve
 ## How the warm-ups are built
 
 - Every weight is rounded **up** to the nearest total the plates can build. A work weight above 186 kg is capped at 186 kg with a note.
-- The empty bar comes first: 2 × 5.
+- Squat and press start with the empty bar: 2 × 5.
 - The last warm-up is a single about 7.5% below the work weight and never above 95% of it.
 - Earlier sets are planned backwards from the last warm-up in equal jumps of about 17.5% of the work weight, each rounded up onto a loadable weight.
 - The first weighted set is × 5, the next is × 3 (plus one more triple when there are enough sets), and the rest are singles.
+
+Deadlifts come third in the session, so they get less warm-up, and they are never pulled with an empty bar. They use the same ladder with three changes: a single opening set of 5 at 40 kg (one 10 kg plate per side), calculated weights of 44 kg or less dropped, and × 3 then × 2 on the first two weights that remain before the singles.
 
 Plates live in `PLATES` and per-lift settings in `LIFTS`, both at the top of `app.js`.
 
