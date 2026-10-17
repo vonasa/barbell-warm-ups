@@ -1,7 +1,7 @@
 'use strict';
 
 // Plates owned, per size, in kg. Only matched pairs are usable, so an odd plate is ignored.
-// This inventory is what every weight below gets rounded onto.
+// This inventory is what the work weight gets rounded onto.
 const PLATES = [
   { kg: 25, count: 2 },
   { kg: 20, count: 2 },
@@ -11,6 +11,13 @@ const PLATES = [
   { kg: 1.25, count: 4 },
   { kg: 0.5, count: 2 },
 ];
+
+// Warm-ups skip the 0.5 kg pair: a 2.5 kg grid is precise enough and easier to load.
+const WARMUP_PLATES = PLATES.filter((p) => p.kg >= 1.25);
+
+// The 25s stay in the rack until the bar is heavier than this; lighter totals load from the 20s down.
+const BIG_PLATE = 25;
+const BIG_PLATE_MIN_TOTAL = 117.5;
 
 // Per-lift settings. All lifts share the same values for now; change them here to vary a lift.
 const BASE = {
@@ -49,7 +56,7 @@ const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
 
 // Every total the plates can build on the given bar, ascending, each with the plates for one side:
 // { h, total, perSide, plates: [{ kg, n }] }. The plates are listed heaviest first.
-function buildLoadable(bar, plates) {
+function buildCombos(bar, plates) {
   const sizes = plates
     .map((p) => ({ kg: p.kg, h: H(p.kg), pairs: Math.floor(p.count / 2) }))
     .filter((p) => p.pairs > 0 && p.h > 0)
@@ -81,10 +88,20 @@ function buildLoadable(bar, plates) {
     }));
 }
 
-const loadableCache = new Map();
-function loadableFor(bar) {
-  if (!loadableCache.has(bar)) loadableCache.set(bar, buildLoadable(bar, PLATES));
-  return loadableCache.get(bar);
+// The same totals as buildCombos, but light ones are built without the 25s even when a 25 would mean
+// fewer plates: below BIG_PLATE_MIN_TOTAL every total is reachable from the 20s down anyway.
+function buildLoadable(bar, plates) {
+  const all = buildCombos(bar, plates);
+  const small = new Map(buildCombos(bar, plates.filter((p) => p.kg < BIG_PLATE)).map((e) => [e.h, e]));
+  return all.map((e) => (e.h <= H(BIG_PLATE_MIN_TOTAL) && small.has(e.h) ? small.get(e.h) : e));
+}
+
+// kind 'all' is the work-weight table; 'warmup' is the coarser one every other set is rounded onto.
+const loadableCaches = { all: new Map(), warmup: new Map() };
+function loadableFor(bar, kind = 'all') {
+  const cache = loadableCaches[kind];
+  if (!cache.has(bar)) cache.set(bar, buildLoadable(bar, kind === 'warmup' ? WARMUP_PLATES : PLATES));
+  return cache.get(bar);
 }
 
 // Smallest index at or above kg; the heaviest index when kg is above everything loadable.
@@ -133,30 +150,36 @@ function computeWarmups(liftKey, target) {
   const cfg = LIFTS[liftKey];
   if (!cfg || !Number.isFinite(target) || target < cfg.bar) return null;
 
+  // The work weight is rounded onto every plate there is; everything before it onto the coarse table.
   const table = loadableFor(cfg.bar);
+  const warm = loadableFor(cfg.bar, 'warmup');
   const maxTotal = table[table.length - 1].total;
   const capped = H(target) > H(maxTotal);
   const workIdx = capped ? table.length - 1 : ceilIndex(table, target);
-  // Jumps are always spaced from the bar, even for a lift whose first sets start above it.
-  const barIdx = Math.min(ceilIndex(table, cfg.bar), workIdx);
-  const startIdx = Math.min(ceilIndex(table, cfg.startWeight), workIdx);
   const work = table[workIdx].total;
+  // Jumps are always spaced from the bar, even for a lift whose first sets start above it.
+  const barIdx = Math.min(ceilIndex(warm, cfg.bar), floorIndex(warm, work));
+  const startIdx = Math.min(ceilIndex(warm, cfg.startWeight), floorIndex(warm, work));
+  // The heaviest warm-up allowed: the last coarse weight below the work weight.
+  let topIdx = floorIndex(warm, work);
+  if (warm[topIdx].h >= H(work)) topIdx -= 1;
 
   const set = (entry, reps, kind) => ({
     total: entry.total, perSide: entry.perSide, plates: entry.plates, reps, kind,
   });
 
   const sets = [];
-  for (let i = 0; i < cfg.startSets; i++) sets.push(set(table[startIdx], cfg.startReps, 'start'));
+  for (let i = 0; i < cfg.startSets; i++) sets.push(set(warm[startIdx], cfg.startReps, 'start'));
 
-  if (workIdx > barIdx + 1) {
-    const lastIdx = clamp(
-      Math.min(nearestIndex(table, work * cfg.lastPct), floorIndex(table, work * cfg.lastMaxPct)),
-      barIdx + 1,
-      workIdx - 1,
-    );
+  // When even the last warm-up lands on the bar, nothing worth loading fits before the work set.
+  const lastIdx = Math.min(
+    nearestIndex(warm, work * cfg.lastPct),
+    floorIndex(warm, work * cfg.lastMaxPct),
+    topIdx,
+  );
 
-    const distance = table[lastIdx].total - table[barIdx].total;
+  if (lastIdx > barIdx) {
+    const distance = warm[lastIdx].total - warm[barIdx].total;
     const jumps = clamp(Math.round(distance / (work * cfg.jumpPct)), 1, lastIdx - barIdx);
     const step = distance / jumps;
 
@@ -165,12 +188,12 @@ function computeWarmups(liftKey, target) {
     // minWarmup is dropped — it sits too close to the first sets to be worth loading.
     const weighted = new Set();
     for (let i = 0; i < jumps; i++) {
-      const idx = ceilIndex(table, table[lastIdx].total - i * step);
-      if (idx > barIdx && idx <= lastIdx && table[idx].h > H(cfg.minWarmup)) weighted.add(idx);
+      const idx = ceilIndex(warm, warm[lastIdx].total - i * step);
+      if (idx > barIdx && idx <= lastIdx && warm[idx].h > H(cfg.minWarmup)) weighted.add(idx);
     }
 
     const ordered = [...weighted].sort((a, b) => a - b);
-    ordered.forEach((idx, i) => sets.push(set(table[idx], repsFor(i, ordered.length, cfg), 'warmup')));
+    ordered.forEach((idx, i) => sets.push(set(warm[idx], repsFor(i, ordered.length, cfg), 'warmup')));
   }
 
   sets.push(set(table[workIdx], null, 'work'));
